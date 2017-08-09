@@ -3,14 +3,12 @@ package helm
 import (
 	"errors"
 	"fmt"
-	"log"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/hashicorp/terraform/helper/schema"
-	"gopkg.in/yaml.v1"
 	"k8s.io/helm/pkg/chartutil"
 	"k8s.io/helm/pkg/downloader"
 	"k8s.io/helm/pkg/getter"
@@ -18,7 +16,6 @@ import (
 	"k8s.io/helm/pkg/proto/hapi/chart"
 	"k8s.io/helm/pkg/proto/hapi/release"
 	"k8s.io/helm/pkg/repo"
-	"k8s.io/helm/pkg/strvals"
 )
 
 var ErrReleaseNotFound = errors.New("release not found")
@@ -54,22 +51,10 @@ func resourceChart() *schema.Resource {
 				Optional:    true,
 				Description: "Specify the exact chart version to install. If this is not specified, the latest version is installed.",
 			},
-			"value": {
-				Type:        schema.TypeSet,
+			"values": {
+				Type:        schema.TypeString,
 				Optional:    true,
-				Description: "Custom values to be merge with the values.yaml.",
-				Elem: &schema.Resource{
-					Schema: map[string]*schema.Schema{
-						"name": {
-							Type:     schema.TypeString,
-							Required: true,
-						},
-						"content": {
-							Type:     schema.TypeString,
-							Required: true,
-						},
-					},
-				},
+				Description: "set values.yaml content",
 			},
 			"namespace": {
 				Type:        schema.TypeString,
@@ -180,14 +165,9 @@ func resourceChartCreate(d *schema.ResourceData, meta interface{}) error {
 		return err
 	}
 
-	values, err := getValues(d)
-	if err != nil {
-		return err
-	}
-
 	opts := []helm.InstallOption{
 		helm.ReleaseName(d.Get("name").(string)),
-		helm.ValueOverrides(values),
+		helm.ValueOverrides([]byte(d.Get("values").(string))),
 		helm.InstallDisableHooks(d.Get("disable_webhooks").(bool)),
 		helm.InstallTimeout(int64(d.Get("timeout").(int))),
 		helm.InstallWait(true),
@@ -229,18 +209,13 @@ func setIdAndMetadataFromRelease(d *schema.ResourceData, r *release.Release) err
 func resourceChartUpdate(d *schema.ResourceData, meta interface{}) error {
 	m := meta.(*Meta)
 
-	values, err := getValues(d)
-	if err != nil {
-		return err
-	}
-
 	_, path, err := getChart(d, m)
 	if err != nil {
 		return err
 	}
 
 	opts := []helm.UpdateOption{
-		helm.UpdateValueOverrides(values),
+		helm.UpdateValueOverrides([]byte(d.Get("values").(string))),
 		helm.UpgradeRecreate(d.Get("recreate_pods").(bool)),
 		helm.UpgradeForce(d.Get("force_update").(bool)),
 		helm.UpgradeDisableHooks(d.Get("disable_webhooks").(bool)),
@@ -320,27 +295,6 @@ func getChart(d *schema.ResourceData, m *Meta) (c *chart.Chart, path string, err
 	}
 
 	return
-}
-
-func getValues(d *schema.ResourceData) ([]byte, error) {
-	base := map[string]interface{}{}
-
-	for _, raw := range d.Get("value").(*schema.Set).List() {
-		value := raw.(map[string]interface{})
-
-		name := value["name"].(string)
-		content := value["content"].(string)
-
-		if err := strvals.ParseInto(fmt.Sprintf("%s=%s", name, content), base); err != nil {
-			return nil, fmt.Errorf("failed parsing key %q with value %s, %s", name, content, err)
-		}
-	}
-
-	values, err := yaml.Marshal(base)
-	if err == nil {
-		log.Printf("---[ values.yaml ]-----------------------------------\n%s\n", string(values))
-	}
-	return values, err
 }
 
 var all = []release.Status_Code{
