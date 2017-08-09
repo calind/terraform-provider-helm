@@ -5,15 +5,18 @@ import (
 	"crypto/x509"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/hashicorp/terraform/helper/pathorcontents"
 	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/hashicorp/terraform/terraform"
 	"github.com/mitchellh/go-homedir"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	helm_install "k8s.io/helm/cmd/helm/installer"
 	"k8s.io/helm/pkg/helm"
 	helm_env "k8s.io/helm/pkg/helm/environment"
 	"k8s.io/helm/pkg/helm/helmpath"
@@ -43,6 +46,11 @@ func Provider() terraform.ResourceProvider {
 				Optional:    true,
 				Default:     tiller_env.DefaultTillerNamespace,
 				Description: "Set an alternative Tiller namespace.",
+			},
+			"init_server": {
+				Type:        schema.TypeBool,
+				Optional:    true,
+				Description: "Initialize tiller if not already installed",
 			},
 			"debug": {
 				Type:     schema.TypeBool,
@@ -170,6 +178,7 @@ type Meta struct {
 func buildMeta(d *schema.ResourceData) (*Meta, error) {
 	m := &Meta{}
 	m.buildSettings(d)
+	init_server := d.Get("init_server").(bool)
 
 	if err := m.buildTLSConfig(d); err != nil {
 		return nil, err
@@ -177,6 +186,22 @@ func buildMeta(d *schema.ResourceData) (*Meta, error) {
 
 	if err := m.buildK8sClient(d); err != nil {
 		return nil, err
+	}
+
+	if init_server == true {
+		opts := &helm_install.Options{
+			Namespace: d.Get("namespace").(string),
+			// Use 2.5.1 since it solves some nasty deadlocks and uses docker
+			// registry v2
+			ImageSpec: "gcr.io/kubernetes-helm/tiller:v2.5.1",
+		}
+		if err := helm_install.Install(m.K8sClient, opts); err != nil {
+			if !apierrors.IsAlreadyExists(err) {
+				return nil, err
+			}
+		} else {
+			time.Sleep(10 * time.Second) // allow some time for tiller deployment
+		}
 	}
 
 	if err := m.buildTunnel(d); err != nil {
